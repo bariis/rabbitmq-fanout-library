@@ -1,7 +1,6 @@
 package rabbitmq
 
 import (
-	"errors"
 	"log"
 	"sync"
 	"time"
@@ -22,7 +21,7 @@ func New(amqpURI string) *RabbitMQ {
 func (r *RabbitMQ) Connect() error {
 	conn, err := amqp.Dial(r.AMQPUri)
 	if err != nil {
-		return err
+		return RMQError(err, FailedToDial, "")
 	}
 	r.connection = conn
 
@@ -34,13 +33,13 @@ func (r *RabbitMQ) Connect() error {
 func (r *RabbitMQ) Channel() (*amqp.Channel, error) {
 	if r.connection == nil {
 		if err := r.Connect(); err != nil {
-			return nil, errors.New("connection is not open")
+			return nil, RMQError(err, ConnectionIsNotOpen, "")
 		}
 	}
 
 	channel, err := r.connection.Channel()
 	if err != nil {
-		return nil, err
+		return nil, RMQError(err, FailedToOpenChannel, "")
 	}
 	return channel, nil
 }

@@ -2,22 +2,27 @@ package rabbitmq
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"time"
 
 	"github.com/streadway/amqp"
 )
 
+const (
+	ExchangeType = "fanout"
+)
+
 type AMQP struct {
 	rabbitmq     *RabbitMQ
+	ContentType  string
 	ExchangeName string
 	QueueName    string
 }
 
-func NewAMQP(rabbitmq *RabbitMQ, exchangeName, queueName string) AMQP {
+func NewAMQP(rabbitmq *RabbitMQ, exchangeName, queueName, contentType string) AMQP {
 	return AMQP{
 		ExchangeName: exchangeName,
+		ContentType:  contentType,
 		QueueName:    queueName,
 		rabbitmq:     rabbitmq,
 	}
@@ -26,12 +31,12 @@ func NewAMQP(rabbitmq *RabbitMQ, exchangeName, queueName string) AMQP {
 func (a AMQP) Setup() error {
 	channel, err := a.rabbitmq.Channel()
 	if err != nil {
-		log.Println("failed to open channel")
+		return RMQError(err, FailedToOpenChannel, "")
 	}
 	defer channel.Close()
 
 	if err := a.declareExchange(channel); err != nil {
-		return err
+		return RMQError(err, FaileToDeclareExchange, "")
 	}
 
 	return nil
@@ -40,14 +45,13 @@ func (a AMQP) Setup() error {
 func (a AMQP) declareExchange(channel *amqp.Channel) error {
 	if err := channel.ExchangeDeclare(
 		a.ExchangeName,
-		"fanout",
+		ExchangeType,
 		true,
 		false,
 		false,
 		false,
 		nil,
 	); err != nil {
-		log.Printf("failed to declare exchange: %v\n", err)
 		return err
 	}
 	return nil
@@ -56,7 +60,7 @@ func (a AMQP) declareExchange(channel *amqp.Channel) error {
 func (a AMQP) StartQueue(channel *amqp.Channel) error {
 	channel, err := a.rabbitmq.Channel()
 	if err != nil {
-		log.Println("failed to open channel")
+		return RMQError(err, FailedToOpenChannel, "")
 	}
 	defer channel.Close()
 
@@ -68,8 +72,7 @@ func (a AMQP) StartQueue(channel *amqp.Channel) error {
 		false,
 		nil,
 	); err != nil {
-		log.Printf("failed to declare a queue: %v\n", err)
-		return err
+		return RMQError(err, FailedToDeclareQueue, "")
 	}
 
 	if err := channel.QueueBind(
@@ -79,27 +82,20 @@ func (a AMQP) StartQueue(channel *amqp.Channel) error {
 		false,
 		nil,
 	); err != nil {
-		log.Printf("failed to bind queue: %v\n", err)
-		return err
+		return RMQError(err, FailedToBindQueue, "")
 	}
-
-	//go a.Consume(channel, queueName)
-
 	return nil
 }
 
 func (a AMQP) Push(message string) error {
 	channel, err := a.rabbitmq.Channel()
-	fmt.Println(channel)
 	if err != nil {
-		log.Println("failed to open channel")
-		return err
+		return RMQError(err, FailedToOpenChannel, "")
 	}
 	defer channel.Close()
 
 	if err := channel.Confirm(false); err != nil {
-		log.Println("failed to put channel in confirmation mode")
-		return err
+		return RMQError(err, FailureInConfirmation, "")
 	}
 
 	if err := channel.Publish(
@@ -108,12 +104,11 @@ func (a AMQP) Push(message string) error {
 		false,
 		false,
 		amqp.Publishing{
-			ContentType: "text/plain",
+			ContentType: a.ContentType,
 			Body:        []byte(message),
 		},
 	); err != nil {
-		log.Println("failed to publish message")
-		return err
+		return RMQError(err, FailedToPublishMessage, "")
 	}
 
 	select {
@@ -122,7 +117,6 @@ func (a AMQP) Push(message string) error {
 			return errors.New("failed to deliver message to exchange/queue")
 		}
 	case <-channel.NotifyReturn(make(chan amqp.Return)):
-		log.Println("failed to deliver message to exchange/queue")
 		return errors.New("failed to deliver message to exchange/queue")
 	case <-time.After(10 * time.Second):
 		log.Println("message delivery confirmation to exchange/queue timed out")
@@ -131,7 +125,7 @@ func (a AMQP) Push(message string) error {
 	return nil
 }
 
-func (a AMQP) Consume(channel *amqp.Channel, consumerName string) <-chan amqp.Delivery {
+func (a AMQP) Consume(channel *amqp.Channel, consumerName string) (<-chan amqp.Delivery, error) {
 	items, err := channel.Consume(
 		a.QueueName,
 		consumerName,
@@ -142,17 +136,8 @@ func (a AMQP) Consume(channel *amqp.Channel, consumerName string) <-chan amqp.De
 		nil,
 	)
 	if err != nil {
-		log.Printf("unable to start consumer: %v\n", err)
+		return nil, RMQError(err, UnableToStartConsumer, consumerName)
 	}
 
-	return items
-	// forever := make(chan bool)
-
-	// go func() {
-	// 	for item := range items {
-	// 		log.Printf("[%s] received\n", item.Body)
-	// 	}
-	// }()
-
-	// <-forever
+	return items, nil
 }
